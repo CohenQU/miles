@@ -1,0 +1,22 @@
+# Dataset config for the aisci_rubric task.
+# Read by examples.aisci_rubric.hf_data_source.HFRolloutDataSource at runtime,
+# path passed in through the AISCI_DATA_CONFIG env var.
+
+repo_id: ACSci/v3-train
+train_split: eliminated_train
+test_split: eliminated_test
+trust_remote_code: true
+
+# How HF columns map onto miles Sample fields.
+field_map:
+  query: query                     # -> Sample.prompt (chat-templated) + metadata.query (raw)
+  rubric: rubric_criteria          # -> metadata.rubric_criteria (parsed JSON list)
+  title: title                     # -> metadata.title (optional, for logging)
+
+# Extra rows to drop on load.
+filters:
+  drop_empty_query: true
+  drop_empty_rubric: true
+
+# Chat template applied to the raw query when building Sample.prompt.
+apply_chat_template: true

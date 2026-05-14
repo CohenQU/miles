@@ -1,0 +1,24 @@
+# Judge backend: HuggingFace dedicated inference endpoint (OpenAI-compatible).
+# Mirrors pipeline-rl's aicsi-rubric-v00.00.yaml setup.
+
+backend: hf
+base_url: https://mtllv6vkucczkopr.us-east-2.aws.endpoints.huggingface.cloud/v1
+model: openai/gpt-oss-20b
+api_key_env: OPENAI_API_KEY
+
+prompt_path: examples/aisci_rubric/prompts/evaluate_rubric.md
+
+sampling:
+  temperature: 0.0
+  max_tokens: 4096
+
+concurrency: 32
+
+retries:
+  max_attempts: 3
+  backoff_seconds: [15, 30, 60]
+  timeout_seconds: 900
+
+# Off by default to match pipeline-rl (discount_factor: 1).
+length_discount:
+  factor: 1.0

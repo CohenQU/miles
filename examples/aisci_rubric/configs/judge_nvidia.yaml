@@ -1,0 +1,25 @@
+# Judge backend: NVIDIA inference API (OpenAI-compatible chat completions).
+# curl -H "Authorization: Bearer $NVIDIA_API_KEY" \
+#   -H "Content-Type: application/json" \
+#   https://inference-api.nvidia.com/v1/chat/completions -d '{...}'
+
+backend: nvidia
+base_url: https://inference-api.nvidia.com/v1
+model: nvidia/openai/gpt-oss-20b
+api_key_env: NVIDIA_API_KEY
+
+prompt_path: examples/aisci_rubric/prompts/evaluate_rubric.md
+
+sampling:
+  temperature: 0.0
+  max_tokens: 4096
+
+concurrency: 32
+
+retries:
+  max_attempts: 3
+  backoff_seconds: [15, 30, 60]
+  timeout_seconds: 900
+
+length_discount:
+  factor: 1.0

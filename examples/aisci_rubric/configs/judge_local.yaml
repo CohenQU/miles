@@ -1,0 +1,41 @@
+# Judge backend: self-hosted SGLang server on the cluster.
+#
+# `serve_judge_local.sh` reads the `serve` block to size its Slurm allocation
+# and brings up `python -m sglang.launch_server` on the head node. It writes
+# the resulting URL (http://<HEAD_IP>:30000/v1) to ${JUDGE_URL_FILE}, which
+# the trainer launcher exports as JUDGE_BASE_URL before training starts.
+#
+# If base_url is null at load time, the reward function falls back to
+# os.environ["JUDGE_BASE_URL"] — that's how the trainer hands off the URL.
+
+backend: local
+base_url: null
+model: openai/gpt-oss-20b
+api_key_env: null
+
+prompt_path: examples/aisci_rubric/prompts/evaluate_rubric.md
+
+sampling:
+  temperature: 0.0
+  max_tokens: 4096
+
+concurrency: 32
+
+retries:
+  max_attempts: 3
+  backoff_seconds: [15, 30, 60]
+  timeout_seconds: 900
+
+length_discount:
+  factor: 1.0
+
+# Multi-node ready: bumping num_nodes triggers a multi-node srun and
+# corresponding --nnodes / --node-rank flags into sglang.launch_server.
+serve:
+  num_nodes: 1
+  gpus_per_node: 8
+  tp: 1
+  dp: 8
+  max_model_len: 98304
+  mem_fraction_static: 0.85
+  port: 30000
