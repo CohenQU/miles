@@ -28,6 +28,8 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PLACEHOLDER_RE = re.compile(r"\{([A-Z][A-Z0-9_]*)\}")
 _SCORE_DELIMITER = "---SCORE---"
 _MAX_RESPONSE_CHARS = 12000
+_THINK_END = "</think>"
+_THINK_START = "<think>"
 
 # Lazily initialized singletons. RM is invoked many times per rollout — we
 # don't want to reload the prompt template or open a new aiohttp session per
@@ -160,6 +162,25 @@ def _compute_score(scores: list[dict], n_criteria: int) -> tuple[float, int]:
     return max(0.0, min(1.0, n_yes / n_criteria)), n_yes
 
 
+def _zero_reward(reward_cat: str, n_criteria: int) -> dict:
+    return {
+        "reward_value": 0.0,
+        "reward_cat": reward_cat,
+        "n_yes": 0,
+        "n_criteria": n_criteria,
+        "judge_latency_seconds": 0.0,
+    }
+
+
+def _extract_visible(response: str) -> str:
+    """Return the substring after the last </think>, or the full response if
+    there's no </think> at all. Caller must separately guard against the
+    "<think> opened but never closed" case (no visible content emitted)."""
+    if _THINK_END in response:
+        return response.rsplit(_THINK_END, 1)[1]
+    return response
+
+
 async def _score_one(sample: Sample) -> dict:
     """Score a single sample. Returns the reward dict that's stored on Sample.reward."""
     metadata = sample.metadata if isinstance(sample.metadata, dict) else {}
@@ -168,19 +189,30 @@ async def _score_one(sample: Sample) -> dict:
     rubric = _parse_rubric(rubric_raw)
     response = sample.response or ""
 
-    if not query.strip() or not rubric or not response.strip():
-        return {
-            "reward_value": 0.0,
-            "reward_cat": "no_input",
-            "n_yes": 0,
-            "n_criteria": len(rubric),
-            "judge_latency_seconds": 0.0,
-        }
+    if not query.strip() or not rubric:
+        return _zero_reward("no_input", len(rubric))
+
+    # Truncated rollouts get 0 regardless of WHERE the cut landed (mid-thinking
+    # or mid-final-response). A truncated output is incomplete by definition,
+    # and without this guard the model has no incentive to keep <think> short
+    # enough to fit visible content inside the rollout budget.
+    if sample.status == Sample.Status.TRUNCATED:
+        return _zero_reward("truncated", len(rubric))
+
+    # If the model emitted <think> but never closed it (no </think>), there is
+    # no visible content to score — this shouldn't happen when status != TRUNCATED
+    # (the model would only stop mid-thinking via an EOS), but guard anyway.
+    if _THINK_START in response and _THINK_END not in response:
+        return _zero_reward("unclosed_thinking", len(rubric))
+
+    candidate = _extract_visible(response).strip()
+    if not candidate:
+        return _zero_reward("no_visible_content", len(rubric))
 
     prompt = _fill_template(
         _prompt_template,
         QUERY=query,
-        CANDIDATE_RESPONSE=_truncate(response),
+        CANDIDATE_RESPONSE=_truncate(candidate),
         RUBRIC=_format_rubric(rubric),
     )
 

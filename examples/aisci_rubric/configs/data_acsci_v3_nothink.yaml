@@ -1,0 +1,23 @@
+# Dataset config — thinking mode OFF.
+# Same as data_acsci_v3.yaml but explicitly pins enable_thinking: false so the
+# Qwen3-family chat template short-circuits with "<think>\n\n</think>\n\n" in
+# the assistant prompt prefix — the model generates only visible content.
+#
+# Pair with --rollout-max-response-len 8192 (8k).
+
+repo_id: ACSci/v3-train
+train_split: eliminated_train
+test_split: eliminated_test
+trust_remote_code: true
+
+field_map:
+  query: query
+  rubric: rubric_criteria
+  title: title
+
+filters:
+  drop_empty_query: true
+  drop_empty_rubric: true
+
+apply_chat_template: true
+enable_thinking: false

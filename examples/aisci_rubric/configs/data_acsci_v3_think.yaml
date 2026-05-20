@@ -1,0 +1,25 @@
+# Dataset config — thinking mode ON.
+# Same as data_acsci_v3.yaml but explicitly pins enable_thinking: true so the
+# Qwen3-family chat template keeps the assistant prompt ending with "<think>\n",
+# making the model produce <think>...</think> blocks during rollout.
+#
+# Pair with --rollout-max-response-len 16384 (16k) — the thinking budget eats
+# into the rollout response cap, so 8k often truncates mid-thought late in
+# training.
+
+repo_id: ACSci/v3-train
+train_split: eliminated_train
+test_split: eliminated_test
+trust_remote_code: true
+
+field_map:
+  query: query
+  rubric: rubric_criteria
+  title: title
+
+filters:
+  drop_empty_query: true
+  drop_empty_rubric: true
+
+apply_chat_template: true
+enable_thinking: true

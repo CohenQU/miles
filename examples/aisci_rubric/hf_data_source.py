@@ -105,6 +105,12 @@ class HFRolloutDataSource(RolloutDataSourceWithBuffer):
         field_map: dict[str, str] = cfg.get("field_map") or {}
         filters: dict[str, bool] = cfg.get("filters") or {}
         apply_chat_template: bool = bool(cfg.get("apply_chat_template", True))
+        # Qwen3-family chat-template kwarg: True keeps the model in thinking mode
+        # (assistant prompt ends with "<think>\n"), False short-circuits the
+        # thinking block (assistant prompt ends with "<think>\n\n</think>\n\n").
+        # `None` = don't pass the kwarg at all (defer to the tokenizer's default,
+        # which on Qwen3 is True).
+        enable_thinking_cfg = cfg.get("enable_thinking", None)
 
         query_col = field_map.get("query", "query")
         rubric_col = field_map.get("rubric", "rubric_criteria")
@@ -140,10 +146,14 @@ class HFRolloutDataSource(RolloutDataSourceWithBuffer):
                 continue
 
             if apply_chat_template:
+                template_kwargs = {}
+                if enable_thinking_cfg is not None:
+                    template_kwargs["enable_thinking"] = bool(enable_thinking_cfg)
                 prompt = tokenizer.apply_chat_template(
                     [{"role": "user", "content": query}],
                     tokenize=False,
                     add_generation_prompt=True,
+                    **template_kwargs,
                 )
             else:
                 prompt = query

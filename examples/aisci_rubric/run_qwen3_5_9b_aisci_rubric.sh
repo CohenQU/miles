@@ -48,11 +48,14 @@ EXP_NAME=${EXP_NAME:-${RUN_TAG}_${TIMESTAMP}}
 
 source "${MILES_DIR}/scripts/models/qwen3.5-9B.sh"
 
+# CKPT_TAG: see comment in run_qwen3_5_4b_aisci_rubric.sh.
+CKPT_TAG=${CKPT_TAG:-aisci_rubric}
+
 CKPT_ARGS=(
    --hf-checkpoint ${MODEL_ROOT}/Qwen3.5-9B
    --ref-load ${MODEL_ROOT}/Qwen3.5-9B_torch_dist
-   --load ${MODEL_ROOT}/Qwen3.5-9B_aisci_rubric/
-   --save ${MODEL_ROOT}/Qwen3.5-9B_aisci_rubric/
+   --load ${MODEL_ROOT}/Qwen3.5-9B_${CKPT_TAG}/
+   --save ${MODEL_ROOT}/Qwen3.5-9B_${CKPT_TAG}/
    --save-interval ${SAVE_INTERVAL:-20}
 )
 
@@ -64,7 +67,7 @@ ROLLOUT_ARGS=(
    --num-rollout ${NUM_ROLLOUT:-3000}
    --rollout-batch-size 32
    --n-samples-per-prompt 8
-   --rollout-max-response-len 8192
+   --rollout-max-response-len ${ROLLOUT_MAX_RESPONSE_LEN:-8192}
    --rollout-temperature 0.8
 
    --global-batch-size 256
@@ -90,7 +93,7 @@ PERF_ARGS=(
    --recompute-num-layers 1
 
    --use-dynamic-batch-size
-   --max-tokens-per-gpu 4608
+   --max-tokens-per-gpu ${MAX_TOKENS_PER_GPU:-4608}
 )
 
 GRPO_ARGS=(
