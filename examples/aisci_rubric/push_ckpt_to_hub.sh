@@ -1,6 +1,6 @@
 #!/bin/bash
 # Convert one miles torch_dist checkpoint to HF safetensors and push it to
-# CMU-POPE/Qwen3.5-{4B,9B}-aisci-rubric-v00.00 as a branch revision `iter-N`.
+# CMU-POPE/Qwen3.5-{4B,9B}-aisci-rubric-{HUB_VERSION_TAG} as branch `iter-N`.
 #
 # Usage:
 #   ./push_ckpt_to_hub.sh <model> <iter> [--dry-run] [--public]
@@ -9,9 +9,14 @@
 #     --dry-run: convert only, skip the upload
 #     --public:  create the hub repo as public if it doesn't exist (default: private)
 #
-# The script is idempotent: if the converted HF dir already exists it skips
-# conversion; if the iter-N branch already has the same content the upload
-# is a no-op.
+# Env knobs:
+#   CKPT_TAG          checkpoint-dir suffix under MODEL_ROOT. Default: aisci_rubric
+#                     (v01.00 layout). v03 uses aisci_rubric_v03.{00..03}.
+#   HUB_VERSION_TAG   version slug in the hub repo name. Default: v00.00
+#                     (v01.00's hub repo). v03 uses v03.{00..03}.
+#
+# Idempotent: if the converted HF dir already exists it skips conversion;
+# if the iter-N branch already has the same content the upload is a no-op.
 #
 # Required: HF_TOKEN in Research-skills/.env with WRITE scope on CMU-POPE/*.
 
@@ -49,17 +54,21 @@ CONDA_BASE=/lustre/fsw/portfolios/nvr/projects/nvr_lacr_llm/users/yuxiaoq/envs/m
 HF_ENV_NAME=hf
 HF_ENV=${CONDA_BASE}/envs/${HF_ENV_NAME}
 
+CKPT_TAG=${CKPT_TAG:-aisci_rubric}
+HUB_VERSION_TAG=${HUB_VERSION_TAG:-v00.00}
+
 ITER_PADDED=$(printf '%07d' "${ITER}")
-CKPT_DIR=${MODEL_ROOT}/Qwen3.5-${MODEL}_aisci_rubric/iter_${ITER_PADDED}
-HF_OUT=${MODEL_ROOT}/Qwen3.5-${MODEL}_aisci_rubric_hf/iter_${ITER_PADDED}
+CKPT_PARENT_DIR=${MODEL_ROOT}/Qwen3.5-${MODEL}_${CKPT_TAG}
+CKPT_DIR=${CKPT_PARENT_DIR}/iter_${ITER_PADDED}
+HF_OUT=${MODEL_ROOT}/Qwen3.5-${MODEL}_${CKPT_TAG}_hf/iter_${ITER_PADDED}
 ORIGIN_HF_DIR=${MODEL_ROOT}/Qwen3.5-${MODEL}
-HUB_REPO=CMU-POPE/Qwen3.5-${MODEL}-aisci-rubric-v00.00
+HUB_REPO=CMU-POPE/Qwen3.5-${MODEL}-aisci-rubric-${HUB_VERSION_TAG}
 REVISION=iter-${ITER}
 
 if [[ ! -d "${CKPT_DIR}" ]]; then
     echo "ERROR: checkpoint dir not found: ${CKPT_DIR}" >&2
-    echo "Available iterations:" >&2
-    ls "${MODEL_ROOT}/Qwen3.5-${MODEL}_aisci_rubric/" 2>&1 | grep -E "^iter_" >&2 || true
+    echo "Available iterations in ${CKPT_PARENT_DIR}:" >&2
+    ls "${CKPT_PARENT_DIR}" 2>&1 | grep -E "^iter_" >&2 || true
     exit 1
 fi
 if [[ ! -d "${ORIGIN_HF_DIR}" ]]; then
@@ -81,11 +90,11 @@ if [[ -f "${HF_OUT}/model.safetensors.index.json" ]]; then
     echo "[skip convert] ${HF_OUT}/model.safetensors.index.json already exists"
 else
     mkdir -p "$(dirname "${HF_OUT}")"
-    echo "[convert] running tools/convert_torch_dist_to_hf.py via srun -p ${SRUN_PARTITION:-backfill}"
-    # backfill is the default: lots of capacity, and our conversion is ~30s
-    # so preemption risk during the actual run is negligible. Override with
-    # SRUN_PARTITION=batch_short / interactive / cpu if availability flips.
-    srun --account=nvr_lacr_llm --partition="${SRUN_PARTITION:-backfill}" --time=00:30:00 \
+    echo "[convert] running tools/convert_torch_dist_to_hf.py via srun -p ${SRUN_PARTITION:-interactive}"
+    # interactive (priority 40) is the proven default — backfill (priority 10)
+    # starves under cluster training load, batch_short fills up, cpu is slow.
+    # Override with SRUN_PARTITION=<other> if interactive itself is unavailable.
+    srun --account=nvr_lacr_llm --partition="${SRUN_PARTITION:-interactive}" --time=00:30:00 \
         --cpus-per-task=16 --mem=128G --gpus-per-node=1 \
         --container-image="${CONTAINER_IMAGE}" \
         --container-mounts=/lustre:/lustre \
@@ -135,7 +144,7 @@ echo "[upload] pushing ${HF_OUT} → ${HUB_REPO}@${REVISION}"
 hf upload "${HUB_REPO}" "${HF_OUT}" . \
     --repo-type model \
     --revision "${REVISION}" \
-    --commit-message "aisci_rubric RL Qwen3.5-${MODEL}, iter ${ITER}"
+    --commit-message "aisci_rubric RL Qwen3.5-${MODEL} (${HUB_VERSION_TAG}), iter ${ITER}"
 
 echo "================================================================"
 echo "Done. Browse: https://huggingface.co/${HUB_REPO}/tree/${REVISION}"
