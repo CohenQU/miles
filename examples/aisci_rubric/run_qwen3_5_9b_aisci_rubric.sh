@@ -84,7 +84,7 @@ PERF_ARGS=(
    --tensor-model-parallel-size 4
    --sequence-parallel
    --pipeline-model-parallel-size 1
-   --context-parallel-size 1
+   --context-parallel-size ${CONTEXT_PARALLEL_SIZE:-1}
    --expert-model-parallel-size 1
    --expert-tensor-parallel-size 1
 
@@ -137,8 +137,15 @@ MISC_ARGS=(
 
 cd "${MILES_DIR}"
 
-export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
-ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
+# Multi-node knobs — see the 4B launcher for documentation.
+export RAY_HEAD_IP=${RAY_HEAD_IP:-"127.0.0.1"}
+export MASTER_ADDR=${MASTER_ADDR:-${RAY_HEAD_IP}}
+
+if [[ "${RAY_HEAD_ALREADY_STARTED:-0}" != "1" ]]; then
+    ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
+else
+    echo "[run] RAY_HEAD_ALREADY_STARTED=1 — using existing ray cluster at ${RAY_HEAD_IP}:6379"
+fi
 
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
@@ -157,10 +164,10 @@ RUNTIME_ENV_JSON="{
   }
 }"
 
-ray job submit --address="http://127.0.0.1:8265" \
+ray job submit --address="http://${RAY_HEAD_IP}:8265" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
    -- python3 ${MILES_DIR}/train.py \
-   --actor-num-nodes 1 \
+   --actor-num-nodes ${ACTOR_NUM_NODES:-1} \
    --actor-num-gpus-per-node 8 \
    --colocate \
    ${MODEL_ARGS[@]} \
