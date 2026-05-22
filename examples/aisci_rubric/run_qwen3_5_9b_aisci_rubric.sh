@@ -4,14 +4,19 @@
 # Same wiring as the 4B launcher, with --tensor-model-parallel-size 4 and a
 # halved --max-tokens-per-gpu to fit the larger model.
 
-pkill -9 sglang
-sleep 3
-ray stop --force
-pkill -9 ray
-pkill -9 python
-sleep 3
-pkill -9 ray
-pkill -9 python
+# See 4B variant — skip cleanup when the caller has already brought up ray.
+if [[ "${RAY_HEAD_ALREADY_STARTED:-0}" != "1" ]]; then
+    pkill -9 sglang
+    sleep 3
+    ray stop --force
+    pkill -9 ray
+    pkill -9 python
+    sleep 3
+    pkill -9 ray
+    pkill -9 python
+else
+    echo "[run] RAY_HEAD_ALREADY_STARTED=1 — skipping pkill/ray-stop preamble"
+fi
 
 set -ex
 export PYTHONBUFFERED=16

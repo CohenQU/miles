@@ -15,14 +15,21 @@
 # Usage (inside the miles container):
 #   bash examples/aisci_rubric/run_qwen3_5_4b_aisci_rubric.sh
 
-pkill -9 sglang
-sleep 3
-ray stop --force
-pkill -9 ray
-pkill -9 python
-sleep 3
-pkill -9 ray
-pkill -9 python
+# Clean any stale sglang/ray/python from prior runs on this node. Skip when
+# the caller (e.g. the 2-node sbatch wrapper) has already brought up the ray
+# cluster — otherwise we kill the cluster we were just handed.
+if [[ "${RAY_HEAD_ALREADY_STARTED:-0}" != "1" ]]; then
+    pkill -9 sglang
+    sleep 3
+    ray stop --force
+    pkill -9 ray
+    pkill -9 python
+    sleep 3
+    pkill -9 ray
+    pkill -9 python
+else
+    echo "[run] RAY_HEAD_ALREADY_STARTED=1 — skipping pkill/ray-stop preamble"
+fi
 
 set -ex
 export PYTHONBUFFERED=16
