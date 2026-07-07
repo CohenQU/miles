@@ -200,6 +200,7 @@ RUNTIME_ENV_JSON="{
   \"env_vars\": {
     \"PYTHONPATH\": \"${FULLY_ASYNC_DIR}:${MILES_DIR}:${MEGATRON_LM_DIR}/\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
+    \"PYTORCH_CUDA_ALLOC_CONF\": \"${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}\",
     \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\",
     \"WANDB_API_KEY\": \"${WANDB_API_KEY}\",
     \"WANDB_ENTITY\": \"${WANDB_ENTITY:-}\",
