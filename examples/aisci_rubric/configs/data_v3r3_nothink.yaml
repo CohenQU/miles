@@ -1,0 +1,25 @@
+# Dataset config — rubrics_v3 dataset, thinking mode OFF.
+# Source: ACSci/v3-train-rubrics-v3 (2024-2025 conferences in `train`, ICLR-2026
+# held out in `eval`), built by eval/scripts_v3/p9x_build_train_rubrics_v3.py with
+# the discriminative rubrics_v3 (EXP-016).
+#
+# enable_thinking: false short-circuits the Qwen3 chat template with
+# "<think>\n\n</think>\n\n" so the model generates only visible content.
+# Pair with --rollout-max-response-len 16384 (16k). Used by v03.04 (9B nothink 16k).
+
+repo_id: ACSci/v3-train-rubrics-v3
+train_split: train
+test_split: eval
+trust_remote_code: true
+
+field_map:
+  query: query
+  rubric: rubric_criteria
+  title: title
+
+filters:
+  drop_empty_query: true
+  drop_empty_rubric: true
+
+apply_chat_template: true
+enable_thinking: false

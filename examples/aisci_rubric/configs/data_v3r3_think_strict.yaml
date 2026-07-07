@@ -1,0 +1,31 @@
+# Dataset config — rubrics_v3 dataset, thinking mode ON, STRICT completion.
+# Source: ACSci/v3-train-rubrics-v3 (2024-2025 conferences in `train`, ICLR-2026
+# held out in `eval`), built by eval/scripts_v3/p9x_build_train_rubrics_v3.py with
+# the discriminative rubrics_v3 (EXP-016).
+#
+# enable_thinking: true keeps the Qwen3 chat template ending with "<think>\n" so
+# the model produces <think>...</think> blocks during rollout.
+#
+# require_think_close: true turns on the strict reward gate (reward_fn.py): a
+# response earns reward ONLY if it finishes within the rollout budget AND emits a
+# non-empty answer after a closed </think>. Truncated (hit max length) or never
+# closing </think> -> reward 0. Used by v03.05 (9B think 32k).
+# Pair with --rollout-max-response-len 32768 (32k).
+
+repo_id: ACSci/v3-train-rubrics-v3
+train_split: train
+test_split: eval
+trust_remote_code: true
+
+field_map:
+  query: query
+  rubric: rubric_criteria
+  title: title
+
+filters:
+  drop_empty_query: true
+  drop_empty_rubric: true
+
+apply_chat_template: true
+enable_thinking: true
+require_think_close: true

@@ -1,0 +1,34 @@
+# Dataset config — MULTI-ANSWER (M2) dataset, thinking mode OFF.
+# Source: ACSci/v3-train-multi-answer (2024-2025 conferences in `train`,
+# ICLR-2026 M0 pilot in `eval`), built by
+# eval/scripts_v3/p9z_build_train_multianswer.py. Each row is one seed prompt
+# mapped to a SET of valid answers, each carrying its OWN rubric (column
+# `answers`, JSON-serialized list of {answer_id, source, reference_answer,
+# rubric, value, divergence_facet}).
+#
+# multi_answer: true tells hf_data_source to parse `answers` and attach the list
+# of per-answer rubrics to Sample metadata; reward_fn then scores the candidate
+# against EACH rubric and reduces with MAX (no value weight).
+#
+# enable_thinking: false short-circuits the Qwen3 chat template with
+# "<think>\n\n</think>\n\n" so the model generates only visible content.
+# Pair with --rollout-max-response-len 16384 (16k). Used by v03.13.
+
+repo_id: ACSci/v3-train-multi-answer
+train_split: train
+test_split: eval
+trust_remote_code: true
+
+multi_answer: true
+
+field_map:
+  query: query
+  answers: answers
+  title: title
+
+filters:
+  drop_empty_query: true
+  drop_empty_answers: true
+
+apply_chat_template: true
+enable_thinking: false

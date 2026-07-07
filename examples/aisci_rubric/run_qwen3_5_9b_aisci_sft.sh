@@ -1,10 +1,23 @@
 #!/bin/bash
-# Trainer launcher: Qwen3.5-9B GRPO on the aisci_rubric task.
-# 1 node x 8 H100, miles colocated (Megatron actor + SGLang rollout).
-# Same wiring as the 4B launcher, with --tensor-model-parallel-size 4 and a
-# halved --max-tokens-per-gpu to fit the larger model.
+# Trainer launcher: Qwen3.5-9B SUPERVISED FINE-TUNING (no-thinking) baseline for the
+# aisci_rubric task. 1 node x 8 H100, miles SFT (Megatron actor only, NO SGLang/judge).
+#
+# Supervised baseline for the rubric-RL runs (v03.04/05/06): instead of GRPO on the
+# rubric reward, imitate the dataset's `reference_answer`. Reads a `messages` parquet
+# built by eval/scripts_v3/p9y_build_sft_dataset.py via miles.rollout.sft_rollout.
+#
+# Mirrors run_qwen3_5_9b_aisci_rubric.sh (same model/paths/parallelism) but swaps the
+# RL wiring (rollout data source + reward fn + GRPO + SGLang) for SFT_ARGS
+# (--loss-type sft_loss, sft_rollout, --debug-train-only). NOTE: --loss-mask-type qwen3
+# is REQUIRED for Qwen3.5 (the arg default is "qwen", which masks the wrong tokens).
+#
+# Required env:
+#   SFT_DATA       path to the messages parquet (p9y output)
+#   CKPT_TAG       e.g. aisci_sft_v03.07 (model dir suffix; do NOT clobber RL ckpts)
+# Optional env:
+#   NUM_EPOCH (3), SAVE_INTERVAL (340 ~= half-epoch), MAX_TOKENS_PER_GPU (8192),
+#   EXP_NAME, WANDB_PROJECT_NAME (miles), WANDB_ENTITY (yuxiao98)
 
-# See 4B variant — skip cleanup when the caller has already brought up ray.
 if [[ "${RAY_HEAD_ALREADY_STARTED:-0}" != "1" ]]; then
     pkill -9 sglang
     sleep 3
@@ -34,62 +47,55 @@ if [[ -f "${WANDB_ENV}" ]]; then
     set +e
     # shellcheck disable=SC1090
     source "${WANDB_ENV}" 2>/dev/null
-    src_rc=$?
     set -e
-    if [[ "${src_rc}" -ne 0 ]]; then
-        echo "INFO: ${WANDB_ENV} sourced with rc=${src_rc} (likely a path-on-host line that does not apply inside the container) — continuing." >&2
-    fi
-else
-    echo "WARN: ${WANDB_ENV} not found — wandb logging will fail unless WANDB_API_KEY is already set." >&2
 fi
-: "${WANDB_API_KEY:?WANDB_API_KEY is unset}"
-: "${AISCI_JUDGE_CONFIG:?AISCI_JUDGE_CONFIG must point to a judge_*.yaml}"
-: "${AISCI_DATA_CONFIG:?AISCI_DATA_CONFIG must point to a data_*.yaml}"
+
+: "${SFT_DATA:?SFT_DATA must point to the messages parquet (p9y output)}"
+if [[ ! -f "${SFT_DATA}" ]]; then
+    echo "ERROR: SFT_DATA parquet not found: ${SFT_DATA}" >&2 ; exit 1
+fi
 
 WANDB_PROJECT_NAME=${WANDB_PROJECT_NAME:-miles}
-RUN_TAG=${RUN_TAG:-qwen3_5_9b_aisci_rubric}
+RUN_TAG=${RUN_TAG:-qwen3_5_9b_aisci_sft}
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 EXP_NAME=${EXP_NAME:-${RUN_TAG}_${TIMESTAMP}}
 
 source "${MILES_DIR}/scripts/models/qwen3.5-9B.sh"
 
-# CKPT_TAG: see comment in run_qwen3_5_4b_aisci_rubric.sh.
-CKPT_TAG=${CKPT_TAG:-aisci_rubric}
+CKPT_TAG=${CKPT_TAG:-aisci_sft}
 
 CKPT_ARGS=(
    --hf-checkpoint ${MODEL_ROOT}/Qwen3.5-9B
    --ref-load ${MODEL_ROOT}/Qwen3.5-9B_torch_dist
    --load ${MODEL_ROOT}/Qwen3.5-9B_${CKPT_TAG}/
    --save ${MODEL_ROOT}/Qwen3.5-9B_${CKPT_TAG}/
-   --save-interval ${SAVE_INTERVAL:-20}
+   --save-interval ${SAVE_INTERVAL:-340}
 )
 
-ROLLOUT_ARGS=(
-   --data-source-path examples.aisci_rubric.hf_data_source.HFRolloutDataSource
-   --custom-rm-path examples.aisci_rubric.reward_fn.reward_fn
-   --reward-key reward_value
+# SFT data + loss wiring. --loss-mask-type qwen3 is REQUIRED (default "qwen" is wrong
+# for Qwen3.5). sft_rollout reads sample.prompt = the parquet `messages` list and masks
+# loss to the assistant tokens via MultiTurnLossMaskGenerator.
+SFT_ARGS=(
+   --rollout-function-path miles.rollout.sft_rollout.generate_rollout
+   --prompt-data ${SFT_DATA}
+   --input-key messages
+   --loss-mask-type qwen3
    --rollout-shuffle
-   --num-rollout ${NUM_ROLLOUT:-3000}
-   --rollout-batch-size 32
-   --n-samples-per-prompt 8
-   --rollout-max-response-len ${ROLLOUT_MAX_RESPONSE_LEN:-8192}
-   --rollout-temperature 0.8
+   --num-epoch ${NUM_EPOCH:-3}
+   --rollout-batch-size 128
+   --global-batch-size 128
 
-   --global-batch-size 256
-   --balance-data
+   --loss-type sft_loss
+   --calculate-per-token-loss
+   --disable-compute-advantages-and-returns
+   --debug-train-only
 )
-
-EVAL_ARGS=()
-if [[ -n "${EVAL_INTERVAL:-}" && -n "${EVAL_PROMPT_DATA:-}" ]]; then
-    # shellcheck disable=SC2206
-    EVAL_ARGS+=(--eval-interval "${EVAL_INTERVAL}" --eval-prompt-data ${EVAL_PROMPT_DATA})
-fi
 
 PERF_ARGS=(
    --tensor-model-parallel-size 4
    --sequence-parallel
    --pipeline-model-parallel-size 1
-   --context-parallel-size ${CONTEXT_PARALLEL_SIZE:-1}
+   --context-parallel-size 1
    --expert-model-parallel-size 1
    --expert-tensor-parallel-size 1
 
@@ -98,39 +104,33 @@ PERF_ARGS=(
    --recompute-num-layers 1
 
    --use-dynamic-batch-size
-   --max-tokens-per-gpu ${MAX_TOKENS_PER_GPU:-4608}
+   --max-tokens-per-gpu ${MAX_TOKENS_PER_GPU:-8192}
 )
 
-GRPO_ARGS=(
-   --advantage-estimator grpo
-   --use-kl-loss
-   --kl-loss-coef ${KL_LOSS_COEF:-0.00}
-   --kl-loss-type low_var_kl
-   --entropy-coef 0.0001
-   --eps-clip 0.2
-   --eps-clip-high 0.28
-)
-
+# Standard SFT optimizer (from scripts/run-qwen3-4B-base-sft.sh): higher LR + cosine
+# decay, unlike the RL launcher's 1e-6 constant.
 OPTIMIZER_ARGS=(
    --optimizer adam
-   --lr 1e-6
-   --lr-decay-style constant
+   --lr 1e-5
+   --lr-decay-style cosine
+   --min-lr 1e-6
+   --lr-warmup-fraction 0.1
    --weight-decay 0.1
    --adam-beta1 0.9
-   --adam-beta2 0.98
+   --adam-beta2 0.95
 )
 
-WANDB_ARGS=(
-   --use-wandb
-   --wandb-project ${WANDB_PROJECT_NAME}
-   --wandb-group ${EXP_NAME}
-   --wandb-team ${WANDB_ENTITY:-yuxiao98}
-)
-
-SGLANG_ARGS=(
-   --rollout-num-gpus-per-engine 2
-   --sglang-mem-fraction-static 0.55
-)
+WANDB_ARGS=()
+if [[ -n "${WANDB_API_KEY:-}" ]]; then
+    WANDB_ARGS=(
+       --use-wandb
+       --wandb-project ${WANDB_PROJECT_NAME}
+       --wandb-group ${EXP_NAME}
+       --wandb-team ${WANDB_ENTITY:-yuxiao98}
+    )
+else
+    echo "WARN: WANDB_API_KEY unset — running without wandb logging." >&2
+fi
 
 MISC_ARGS=(
    --attention-dropout 0.0
@@ -142,9 +142,9 @@ MISC_ARGS=(
 
 cd "${MILES_DIR}"
 
-# Multi-node knobs — see the 4B launcher for documentation.
 export RAY_HEAD_IP=${RAY_HEAD_IP:-"127.0.0.1"}
 export MASTER_ADDR=${MASTER_ADDR:-${RAY_HEAD_IP}}
+export no_proxy="127.0.0.1,${MASTER_ADDR}"
 
 if [[ "${RAY_HEAD_ALREADY_STARTED:-0}" != "1" ]]; then
     ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-stats --dashboard-host=0.0.0.0 --dashboard-port=8265
@@ -157,31 +157,23 @@ RUNTIME_ENV_JSON="{
     \"PYTHONPATH\": \"${MILES_DIR}:${MEGATRON_LM_DIR}/\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
     \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\",
-    \"WANDB_API_KEY\": \"${WANDB_API_KEY}\",
+    \"PYTORCH_CUDA_ALLOC_CONF\": \"expandable_segments:True\",
+    \"WANDB_API_KEY\": \"${WANDB_API_KEY:-}\",
     \"WANDB_ENTITY\": \"${WANDB_ENTITY:-}\",
     \"HF_TOKEN\": \"${HF_TOKEN:-}\",
-    \"HF_HOME\": \"${HF_HOME:-}\",
-    \"AISCI_JUDGE_CONFIG\": \"${AISCI_JUDGE_CONFIG}\",
-    \"AISCI_DATA_CONFIG\": \"${AISCI_DATA_CONFIG}\",
-    \"OPENAI_API_KEY\": \"${OPENAI_API_KEY:-}\",
-    \"NVIDIA_API_KEY\": \"${NVIDIA_API_KEY:-}\",
-    \"JUDGE_BASE_URL\": \"${JUDGE_BASE_URL:-}\"
+    \"HF_HOME\": \"${HF_HOME:-}\"
   }
 }"
 
 ray job submit --address="http://${RAY_HEAD_IP}:8265" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
-   -- python3 ${MILES_DIR}/train.py \
+   -- python3 ${MILES_DIR}/train_async.py \
    --actor-num-nodes ${ACTOR_NUM_NODES:-1} \
    --actor-num-gpus-per-node 8 \
-   --colocate \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \
-   ${ROLLOUT_ARGS[@]} \
+   ${SFT_ARGS[@]} \
    ${OPTIMIZER_ARGS[@]} \
-   ${GRPO_ARGS[@]} \
    ${WANDB_ARGS[@]} \
    ${PERF_ARGS[@]} \
-   ${EVAL_ARGS[@]} \
-   ${SGLANG_ARGS[@]} \
    ${MISC_ARGS[@]}

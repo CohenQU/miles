@@ -1,0 +1,36 @@
+# Dataset config — MULTI-ANSWER (M2) dataset, thinking mode ON, STRICT completion.
+# Source: ACSci/v3-train-multi-answer (2024-2025 conferences in `train`,
+# ICLR-2026 M0 pilot in `eval`), built by
+# eval/scripts_v3/p9z_build_train_multianswer.py.
+#
+# multi_answer: true -> hf_data_source parses the `answers` column (each answer
+# with its own rubric); reward_fn scores the candidate against every rubric and
+# reduces with MAX (no value weight).
+#
+# enable_thinking: true keeps the Qwen3 chat template ending with "<think>\n" so
+# the model produces <think>...</think> blocks during rollout.
+#
+# require_think_close: true turns on the strict reward gate (reward_fn.py): a
+# response earns reward ONLY if it finishes within the rollout budget AND emits a
+# non-empty answer after a closed </think>. Truncated or never-closing </think>
+# -> reward 0. Pair with --rollout-max-response-len 65536 (64k). Used by v03.14.
+
+repo_id: ACSci/v3-train-multi-answer
+train_split: train
+test_split: eval
+trust_remote_code: true
+
+multi_answer: true
+
+field_map:
+  query: query
+  answers: answers
+  title: title
+
+filters:
+  drop_empty_query: true
+  drop_empty_answers: true
+
+apply_chat_template: true
+enable_thinking: true
+require_think_close: true

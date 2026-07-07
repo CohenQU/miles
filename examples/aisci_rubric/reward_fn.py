@@ -181,33 +181,14 @@ def _extract_visible(response: str) -> str:
     return response
 
 
-async def _score_one(sample: Sample) -> dict:
-    """Score a single sample. Returns the reward dict that's stored on Sample.reward."""
-    metadata = sample.metadata if isinstance(sample.metadata, dict) else {}
-    query = metadata.get("query") or ""
-    rubric_raw = metadata.get("rubric_criteria") or metadata.get("rubric") or []
-    rubric = _parse_rubric(rubric_raw)
-    response = sample.response or ""
-
-    if not query.strip() or not rubric:
-        return _zero_reward("no_input", len(rubric))
-
-    # Truncated rollouts get 0 regardless of WHERE the cut landed (mid-thinking
-    # or mid-final-response). A truncated output is incomplete by definition,
-    # and without this guard the model has no incentive to keep <think> short
-    # enough to fit visible content inside the rollout budget.
-    if sample.status == Sample.Status.TRUNCATED:
-        return _zero_reward("truncated", len(rubric))
-
-    # If the model emitted <think> but never closed it (no </think>), there is
-    # no visible content to score — this shouldn't happen when status != TRUNCATED
-    # (the model would only stop mid-thinking via an EOS), but guard anyway.
-    if _THINK_START in response and _THINK_END not in response:
-        return _zero_reward("unclosed_thinking", len(rubric))
-
-    candidate = _extract_visible(response).strip()
-    if not candidate:
-        return _zero_reward("no_visible_content", len(rubric))
+async def _judge_against_rubric(query: str, candidate: str, rubric: list[dict]) -> dict:
+    """Judge one candidate answer against ONE rubric (the single-rubric core,
+    shared by the single-answer and multi-answer paths). Returns:
+        {score, n_yes, n_criteria, latency, cat}
+    where cat in {ok, no_input, judge_error, no_score}. Never raises."""
+    n_criteria = len(rubric)
+    if n_criteria <= 0:
+        return {"score": 0.0, "n_yes": 0, "n_criteria": 0, "latency": 0.0, "cat": "no_input"}
 
     prompt = _fill_template(
         _prompt_template,
@@ -215,43 +196,142 @@ async def _score_one(sample: Sample) -> dict:
         CANDIDATE_RESPONSE=_truncate(candidate),
         RUBRIC=_format_rubric(rubric),
     )
-
     try:
         judge_text, metrics = await _judge_client.chat(prompt)
     except Exception as e:
         return {
-            "reward_value": 0.0,
-            "reward_cat": "judge_error",
-            "n_yes": 0,
-            "n_criteria": len(rubric),
-            "judge_latency_seconds": 0.0,
-            "error": f"{type(e).__name__}: {e}",
+            "score": 0.0, "n_yes": 0, "n_criteria": n_criteria, "latency": 0.0,
+            "cat": "judge_error", "error": f"{type(e).__name__}: {e}",
         }
 
+    latency = float(metrics.get("judge/latency_seconds", 0.0))
     parsed = _parse_score_blocks(judge_text)
     if not parsed:
-        return {
-            "reward_value": 0.0,
-            "reward_cat": "no_score",
-            "n_yes": 0,
-            "n_criteria": len(rubric),
-            "judge_latency_seconds": metrics.get("judge/latency_seconds", 0.0),
-        }
+        return {"score": 0.0, "n_yes": 0, "n_criteria": n_criteria, "latency": latency, "cat": "no_score"}
 
-    score, n_yes = _compute_score(parsed, len(rubric))
-
-    response_len_tokens = sample.response_length or len(response.split())
-    if _length_discount_factor != 1.0:
-        score *= _length_discount_factor**response_len_tokens
-
+    score, n_yes = _compute_score(parsed, n_criteria)
     return {
-        "reward_value": float(score),
-        "reward_cat": "ok",
-        "n_yes": int(n_yes),
-        "n_criteria": len(rubric),
-        "judge_latency_seconds": float(metrics.get("judge/latency_seconds", 0.0)),
+        "score": float(score), "n_yes": int(n_yes), "n_criteria": n_criteria,
+        "latency": latency, "cat": "ok",
         "judge_prompt_tokens": int(metrics.get("judge/prompt_tokens", 0)),
         "judge_completion_tokens": int(metrics.get("judge/completion_tokens", 0)),
+    }
+
+
+def _collect_answers(metadata: dict) -> list[dict] | None:
+    """Multi-answer (M2) mode: metadata carries an `answers` list, each answer
+    with its OWN rubric. Returns the list of {answer_id, source, rubric} answers
+    that have a non-empty rubric, or None when not in multi-answer mode."""
+    answers_raw = metadata.get("answers")
+    if not isinstance(answers_raw, list) or not answers_raw:
+        return None
+    out = []
+    for a in answers_raw:
+        if not isinstance(a, dict):
+            continue
+        rubric = _parse_rubric(a.get("rubric"))
+        if rubric:
+            out.append({"answer_id": a.get("answer_id"), "source": a.get("source"), "rubric": rubric})
+    return out
+
+
+async def _score_one(sample: Sample) -> dict:
+    """Score a single sample. Returns the reward dict that's stored on Sample.reward."""
+    metadata = sample.metadata if isinstance(sample.metadata, dict) else {}
+    query = metadata.get("query") or ""
+    response = sample.response or ""
+
+    # Multi-answer mode (M2): reward = max over each answer's rubric (no value
+    # weight). Single-answer mode (unchanged): one rubric in rubric_criteria/rubric.
+    answers = _collect_answers(metadata)
+    multi = answers is not None
+    if multi:
+        rubrics = [a["rubric"] for a in answers]
+        n_criteria_repr = max((len(r) for r in rubrics), default=0)
+        has_rubric = bool(rubrics)
+    else:
+        rubric = _parse_rubric(metadata.get("rubric_criteria") or metadata.get("rubric") or [])
+        n_criteria_repr = len(rubric)
+        has_rubric = bool(rubric)
+
+    # ── Response-level guards (computed ONCE; identical to the single-answer path) ──
+    if not query.strip() or not has_rubric:
+        return _zero_reward("no_input", n_criteria_repr)
+
+    # Truncated rollouts get 0 regardless of WHERE the cut landed (mid-thinking
+    # or mid-final-response). A truncated output is incomplete by definition,
+    # and without this guard the model has no incentive to keep <think> short
+    # enough to fit visible content inside the rollout budget.
+    if sample.status == Sample.Status.TRUNCATED:
+        return _zero_reward("truncated", n_criteria_repr)
+
+    # Strict thinking-completion gate (opt-in via the data config's
+    # `require_think_close: true`, surfaced into metadata by hf_data_source).
+    # When the assistant prompt ends with "<think>\n" (enable_thinking=true),
+    # the response has NO opening <think> tag — so the `_THINK_START in response`
+    # guard below never fires for a thinking rollout. A COMPLETED response that
+    # ran out of thoughts and emitted EOS without ever writing </think> has no
+    # finished answer; _extract_visible would otherwise treat the raw thinking
+    # as the answer. Require a closed </think> so reward only flows to responses
+    # that finished within budget AND produced an answer after </think>.
+    if bool(metadata.get("require_think_close", False)) and _THINK_END not in response:
+        return _zero_reward("no_think_close", n_criteria_repr)
+
+    # If the model emitted <think> but never closed it (no </think>), there is
+    # no visible content to score — this shouldn't happen when status != TRUNCATED
+    # (the model would only stop mid-thinking via an EOS), but guard anyway.
+    if _THINK_START in response and _THINK_END not in response:
+        return _zero_reward("unclosed_thinking", n_criteria_repr)
+
+    candidate = _extract_visible(response).strip()
+    if not candidate:
+        return _zero_reward("no_visible_content", n_criteria_repr)
+
+    response_len_tokens = sample.response_length or len(response.split())
+    discount = _length_discount_factor**response_len_tokens if _length_discount_factor != 1.0 else 1.0
+
+    # ── Single-answer path — behavior byte-for-byte unchanged ─────────────────
+    if not multi:
+        r = await _judge_against_rubric(query, candidate, rubric)
+        if r["cat"] == "judge_error":
+            return {
+                "reward_value": 0.0, "reward_cat": "judge_error", "n_yes": 0,
+                "n_criteria": r["n_criteria"], "judge_latency_seconds": 0.0, "error": r.get("error", ""),
+            }
+        if r["cat"] == "no_score":
+            return {
+                "reward_value": 0.0, "reward_cat": "no_score", "n_yes": 0,
+                "n_criteria": r["n_criteria"], "judge_latency_seconds": r["latency"],
+            }
+        return {
+            "reward_value": float(r["score"] * discount),
+            "reward_cat": "ok",
+            "n_yes": int(r["n_yes"]),
+            "n_criteria": int(r["n_criteria"]),
+            "judge_latency_seconds": float(r["latency"]),
+            "judge_prompt_tokens": int(r.get("judge_prompt_tokens", 0)),
+            "judge_completion_tokens": int(r.get("judge_completion_tokens", 0)),
+        }
+
+    # ── Multi-answer path (M2) — judge each answer's rubric, reduce with MAX ───
+    results = await asyncio.gather(*[_judge_against_rubric(query, candidate, a["rubric"]) for a in answers])
+    # Prefer a successfully-judged answer (cat ok), then the higher score; ties
+    # at score 0 fall back to whatever judged so reward_cat surfaces the failure.
+    best_i = max(range(len(results)), key=lambda i: (results[i]["cat"] == "ok", results[i]["score"]))
+    best = results[best_i]
+    best_ans = answers[best_i]
+    seed_score = next((results[i]["score"] for i, a in enumerate(answers) if a.get("source") == "seed"), None)
+    return {
+        "reward_value": float(best["score"] * discount),
+        "reward_cat": best["cat"],            # "ok" when the winning answer judged cleanly
+        "n_yes": int(best["n_yes"]),
+        "n_criteria": int(best["n_criteria"]),
+        "judge_latency_seconds": float(sum(r["latency"] for r in results)),
+        "n_answers": len(answers),
+        "best_answer_id": best_ans.get("answer_id"),
+        "best_source": best_ans.get("source"),
+        "max_score": float(best["score"]),
+        "seed_score": (float(seed_score) if seed_score is not None else None),
     }
 
 
@@ -288,8 +368,36 @@ if __name__ == "__main__":
         ],
     }
 
+    # Multi-answer (M2) fake: same response, two answers with disjoint rubrics.
+    # The seed rubric (boiling point) is satisfied -> score 1.0; the "similar"
+    # rubric (altitude/pressure-cooker) is not -> score 0.0. max -> 1.0, won by
+    # the seed (best_source="seed", best_answer_id=0).
+    fake_multi = Sample()
+    fake_multi.prompt = fake.prompt
+    fake_multi.response = fake.response
+    fake_multi.response_length = 14
+    fake_multi.metadata = {
+        "query": fake.prompt,
+        "answers": [
+            {"answer_id": 0, "source": "seed", "rubric": [
+                {"criterion_id": 1, "aspect": "correctness", "criterion": "States 100°C as the boiling point."},
+            ]},
+            {"answer_id": 1, "source": "similar", "rubric": [
+                {"criterion_id": 1, "aspect": "alt", "criterion": "Explains how boiling point drops at high altitude."},
+                {"criterion_id": 2, "aspect": "alt", "criterion": "Mentions using a pressure cooker."},
+            ]},
+        ],
+    }
+
     async def _go():
-        out = await reward_fn(SimpleNamespace(), [fake])
-        print(out)
+        single = await reward_fn(SimpleNamespace(), [fake])
+        print("single-answer:", single)
+        multi = await reward_fn(SimpleNamespace(), [fake_multi])
+        print("multi-answer :", multi)
+        m = multi[0]
+        assert m.get("reward_cat") == "ok", m
+        assert m.get("best_source") == "seed" and m.get("best_answer_id") == 0, m
+        assert abs(m.get("reward_value", 0.0) - m.get("max_score", -1)) < 1e-9, m
+        print("multi-answer smoke OK: reward = max, won by seed")
 
     asyncio.run(_go())

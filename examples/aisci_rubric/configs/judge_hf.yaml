@@ -4,7 +4,11 @@
 backend: hf
 base_url: https://mtllv6vkucczkopr.us-east-2.aws.endpoints.huggingface.cloud/v1
 model: openai/gpt-oss-20b
-api_key_env: OPENAI_API_KEY
+# HF dedicated Inference Endpoints authenticate with the HF user token, not an
+# OpenAI key. Using OPENAI_API_KEY here caused every judge call in v03 to 401
+# (see AI-Scientist ERR-015). The bearer is whatever this env var holds at
+# launcher time — make sure HF_TOKEN is exported from Research-skills/.env.
+api_key_env: HF_TOKEN
 
 prompt_path: examples/aisci_rubric/prompts/evaluate_rubric.md
 

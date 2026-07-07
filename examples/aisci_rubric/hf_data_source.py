@@ -70,6 +70,22 @@ def _parse_rubric(raw: Any) -> list:
     return []
 
 
+def _parse_answers(raw: Any) -> list:
+    """Multi-answer (M2): parse the `answers` column (JSON string or native list
+    of answer dicts). Keep only answers whose `rubric` is a non-empty list,
+    carrying {answer_id, source, rubric} through to Sample metadata so the reward
+    fn can score the candidate against each rubric and reduce with max."""
+    answers = _parse_rubric(raw)  # reuses the JSON-string-or-list handling
+    out = []
+    for a in answers:
+        if not isinstance(a, dict):
+            continue
+        rubric = _parse_rubric(a.get("rubric"))
+        if rubric:
+            out.append({"answer_id": a.get("answer_id"), "source": a.get("source"), "rubric": rubric})
+    return out
+
+
 class HFRolloutDataSource(RolloutDataSourceWithBuffer):
     def __init__(self, args):
         # Skip parent's JSONL-loading branch but keep its bookkeeping fields.
@@ -111,10 +127,22 @@ class HFRolloutDataSource(RolloutDataSourceWithBuffer):
         # `None` = don't pass the kwarg at all (defer to the tokenizer's default,
         # which on Qwen3 is True).
         enable_thinking_cfg = cfg.get("enable_thinking", None)
+        # Opt-in strict thinking-completion gate. When true, the reward fn
+        # (reward_fn.py) zero-rewards any response that lacks a closed </think>
+        # — i.e. only responses that finish within budget and emit an answer
+        # after </think> earn reward. Off by default; only set in the thinking
+        # data config (data_v3r3_think_strict.yaml).
+        require_think_close: bool = bool(cfg.get("require_think_close", False))
+        # Multi-answer (M2): each row carries a SET of valid answers, each with
+        # its own rubric (column `answers`, JSON-serialized). The reward fn then
+        # scores the candidate against every answer's rubric and takes the max.
+        # Off by default -> single-rubric behavior unchanged.
+        multi_answer: bool = bool(cfg.get("multi_answer", False))
 
         query_col = field_map.get("query", "query")
         rubric_col = field_map.get("rubric", "rubric_criteria")
         title_col = field_map.get("title", "title")
+        answers_col = field_map.get("answers", "answers")
 
         # Tokenizer for chat template (mirrors what miles.utils.data.Dataset does).
         tokenizer = load_tokenizer(
@@ -131,19 +159,27 @@ class HFRolloutDataSource(RolloutDataSourceWithBuffer):
         ds = load_dataset(repo_id, split=split, trust_remote_code=trust_remote_code)
 
         samples: list[Sample] = []
-        skipped = {"empty_query": 0, "empty_rubric": 0}
+        skipped = {"empty_query": 0, "empty_rubric": 0, "empty_answers": 0}
         for row in ds:
             query = row.get(query_col, "") or ""
-            rubric_raw = row.get(rubric_col, "")
             title = row.get(title_col, "")
 
             if filters.get("drop_empty_query", True) and not query.strip():
                 skipped["empty_query"] += 1
                 continue
-            rubric = _parse_rubric(rubric_raw)
-            if filters.get("drop_empty_rubric", True) and not rubric:
-                skipped["empty_rubric"] += 1
-                continue
+
+            if multi_answer:
+                answers = _parse_answers(row.get(answers_col, ""))
+                if filters.get("drop_empty_answers", True) and not answers:
+                    skipped["empty_answers"] += 1
+                    continue
+                rubric_meta = {"answers": answers}
+            else:
+                rubric = _parse_rubric(row.get(rubric_col, ""))
+                if filters.get("drop_empty_rubric", True) and not rubric:
+                    skipped["empty_rubric"] += 1
+                    continue
+                rubric_meta = {"rubric_criteria": rubric}
 
             if apply_chat_template:
                 template_kwargs = {}
@@ -164,9 +200,10 @@ class HFRolloutDataSource(RolloutDataSourceWithBuffer):
                     label=None,
                     metadata={
                         "query": query,
-                        "rubric_criteria": rubric,
+                        **rubric_meta,
                         "title": title,
                         "rm_type": "aisci_rubric",  # advisory, custom-rm-path takes precedence
+                        "require_think_close": require_think_close,
                     },
                 )
             )

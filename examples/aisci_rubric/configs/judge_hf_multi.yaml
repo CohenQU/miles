@@ -1,0 +1,33 @@
+# Judge backend for the MULTI-ANSWER (M2) runs — identical to judge_hf.yaml
+# (HuggingFace dedicated endpoint, gpt-oss-20b) but with higher concurrency.
+#
+# Why: in multi-answer mode the reward fn judges the candidate against EVERY
+# answer's rubric (this dataset averages ~2.9 answers/set), so per-step judge
+# calls go from ~256 to ~745 (~3x). Raising concurrency 32 -> 96 keeps the
+# reward step's wall-clock from tripling. Drop back toward 32 if the endpoint
+# starts rate-limiting / 429-ing under the higher load.
+
+backend: hf
+base_url: https://mtllv6vkucczkopr.us-east-2.aws.endpoints.huggingface.cloud/v1
+model: openai/gpt-oss-20b
+# HF dedicated Inference Endpoints authenticate with the HF user token, not an
+# OpenAI key (see AI-Scientist ERR-015). HF_TOKEN must be exported from
+# Research-skills/.env at launcher time.
+api_key_env: HF_TOKEN
+
+prompt_path: examples/aisci_rubric/prompts/evaluate_rubric.md
+
+sampling:
+  temperature: 0.0
+  max_tokens: 4096
+
+concurrency: 96
+
+retries:
+  max_attempts: 3
+  backoff_seconds: [15, 30, 60]
+  timeout_seconds: 900
+
+# Off by default to match pipeline-rl (discount_factor: 1).
+length_discount:
+  factor: 1.0
