@@ -165,11 +165,14 @@ WANDB_ARGS=(
    --wandb-team ${WANDB_ENTITY:-yuxiao98}
 )
 
-# Rollout SGLang engines are NON-colocated now — they own their GPUs, so mem-fraction can
-# be higher than the colocate 0.6/0.7. rollout-num-gpus-per-engine=4 (=TP4) => ROLLOUT_NUM_GPUS/4 engines.
+# Rollout SGLang engines (non-colocate, own their GPUs). mem-fraction-static=0.7:
+# 0.85 OOM'd mid-generation on the v04 smoke (SGLang "Scheduler hit an exception: CUDA out of
+# memory, tried 3.65 GiB, 332 MiB free") — a 27B TP4 engine holding a 64k-context KV pool needs
+# ample transient/decode headroom, so keep the static pool <=0.7. If it still OOMs, drop to 0.6
+# and/or lower SGLANG_MAX_RUNNING_REQUESTS (fewer concurrent 64k sequences = smaller peak KV).
 SGLANG_ARGS=(
    --rollout-num-gpus-per-engine ${ROLLOUT_NUM_GPUS_PER_ENGINE:-4}
-   --sglang-mem-fraction-static ${SGLANG_MEM_FRACTION_STATIC:-0.85}
+   --sglang-mem-fraction-static ${SGLANG_MEM_FRACTION_STATIC:-0.7}
    --sglang-max-running-requests ${SGLANG_MAX_RUNNING_REQUESTS:-48}
 )
 
